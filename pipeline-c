@@ -1,0 +1,92 @@
+pipeline {
+  agent any
+    environment {
+        git_repoA = "https://github.com/rb-superb/als-repo-a.git"
+        git_repoB = "https://github.com/rb-superb/als-repo-c.git"
+        repoAbranch = "master"
+        repoBbranch = "main"
+        credentialsID = "alstom-github-cred"
+
+        generatedFilename = "als-configfile"
+        workspaceName = "als-workspace"
+        warningsFilename = "als_warnings.txt"
+    }  
+  stages {  
+    stage('Clone Repo A') {
+      steps {
+        script {
+          echo 'Cloning repository'
+          git([url: env.git_repoA, branch: env.repoAbranch, credentialsId: env.credentialsID, changelog: false, poll: false])
+          echo "Successfully cloned Repo A"
+        }
+      }
+    }
+    stage('Ensure Doxygen is Present') {
+      steps {
+        script {
+          try {
+            echo "Initiate Doxygen process"
+            sh """
+              doxygen -g ${generatedFilename}
+              # Set folder target src              
+              sed -i '/^INPUT[[:space:]]/s|=.*|= ${WORKSPACE}/src|' ${generatedFilename}
+              sed -i '/RECURSIVE/s/=.*/= YES/' ${generatedFilename}
+              sed -i '/WARN_LOGFILE/s/=.*/= ${env.warningsFilename}/' ${generatedFilename}
+              sed -i '/QUIET/s/=.*/= NO/' ${generatedFilename}
+
+
+              # Enforce HTML output
+              sed -i '/GENERATE_HTML/s/=.*/= YES/' ${generatedFilename}
+              
+              # Disabling all other output formats
+              sed -i '/GENERATE_LATEX/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_RTF/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_MAN/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_XML/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_DOCBOOK/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_HTMLHELP/s/=.*/= NO/' ${generatedFilename}
+              sed -i '/GENERATE_QHP/s/=.*/= NO/' ${generatedFilename}
+              
+              echo "======= Configuration complete. Doxyfile is ready. ======="
+
+              mkdir -p ${WORKSPACE}/${workspaceName} && cd ${WORKSPACE}/${workspaceName}
+              doxygen ../${generatedFilename}
+              tar -czf doc.tar.gz html
+            """
+            archiveArtifacts artifacts: "${env.workspaceName}/doc.tar.gz", fingerprint: true
+            echo "Doxyfile archived !! "
+            echo "============ Doxygen Success !!! ============"
+
+          } catch (error) {
+            echo "============ Doxygen failed !!! ============"
+            echo "Error: ${e.getMessage()}"
+          }
+        }
+      }
+    }
+    stage('Clone Repo C') {
+      steps {
+        script {
+          dir("${env.WORKSPACE}/${env.workspaceName}") {
+            echo 'Cloning repository'
+            git([url: env.git_repoB, branch: env.repoBbranch, credentialsId: env.credentialsID, changelog: false, poll: false])
+            echo 'Successfully cloned Repo B'
+          }
+        }
+      }
+    }
+    stage('Run log parser via Python') {
+      steps {
+        script {
+          dir("${env.WORKSPACE}/${env.workspaceName}") {
+            echo "============ Parsing Log ============"
+            sh """
+              python als-log-parser.py ${warningsFilename}
+            """
+            archiveArtifacts artifacts: "warnings.csv", fingerprint: true
+          }
+        }
+      }
+    }    
+  }
+}
